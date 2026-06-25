@@ -1,0 +1,6 @@
+{
+  "name": "SB Call Up Diary",
+  "description": "A professional office management system to register, track, monitor and remind users about official letters, messages, tasks and documents requiring action before a due date.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

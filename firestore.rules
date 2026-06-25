@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to get current user data
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Helper function to check if user has Admin or Super Admin role
+    function isAdminOrSuper() {
+      return isAuthenticated() && 
+        (getUserData().role == 'Admin' || getUserData().role == 'Super Admin');
+    }
+
+    // --- USERS COLLECTION ---
+    match /users/{userId} {
+      // Any authenticated user can read user profiles (necessary to see names of assigned officers/owners)
+      allow read: if isAuthenticated();
+      // Users can write/update their own profile on signup or self-edit; Admins/Super Admins can edit anyone
+      allow write: if isAuthenticated() && (request.auth.uid == userId || isAdminOrSuper());
+    }
+
+    // --- CALLUP_ENTRIES COLLECTION ---
+    match /callup_entries/{entryId} {
+      // Admins and Super Admins can read all entries.
+      // Regular Users can only read entries they created or are assigned as Responsible Officer.
+      allow read: if isAuthenticated() && (
+        isAdminOrSuper() || 
+        resource.data.responsibleOfficer == request.auth.uid || 
+        resource.data.createdBy == request.auth.uid
+      );
+      
+      // Admins and Super Admins can create/write all entries.
+      // Users can create entries or update entries they are associated with.
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        isAdminOrSuper() || 
+        resource.data.responsibleOfficer == request.auth.uid || 
+        resource.data.createdBy == request.auth.uid
+      );
+      
+      // Only Admins and Super Admins can delete entries.
+      allow delete: if isAdminOrSuper();
+    }
+
+    // --- NOTIFICATIONS COLLECTION ---
+    match /notifications/{notifId} {
+      // Authenticated users can read notifications targeted to them or general ones (no targetUserId)
+      allow read: if isAuthenticated() && (
+        !resource.data.keys().contains('targetUserId') || 
+        resource.data.targetUserId == request.auth.uid || 
+        isAdminOrSuper()
+      );
+      // Authenticated users can create notifications (e.g. when finishing items) or update (mark readBy)
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdminOrSuper();
+    }
+
+    // --- ACTIVITY_LOGS COLLECTION ---
+    match /activity_logs/{logId} {
+      // Only Admins and Super Admins can view audit trails
+      allow read: if isAdminOrSuper();
+      // Any authenticated session can append audit trails
+      allow create: if isAuthenticated();
+      // No one can update or delete audit logs once created
+      allow update, delete: if false;
+    }
+
+    // --- SETTINGS COLLECTION ---
+    match /settings/{settingsId} {
+      // Any authenticated user can read global configuration settings
+      allow read: if isAuthenticated();
+      // Only Admins and Super Admins can save configurations
+      allow write: if isAdminOrSuper();
+    }
+
+  }
+}
