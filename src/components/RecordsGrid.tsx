@@ -1,32 +1,46 @@
 import React, { useState, useEffect } from "react";
 import { 
   Search, Filter, Calendar, Clock, AlertTriangle, CheckCircle, 
-  ArrowRight, FileText, Download, Trash2, Edit3, Eye, MoreHorizontal, MoreVertical 
+  ArrowRight, FileText, Download, Trash2, Edit3, Eye, MoreHorizontal, MoreVertical, ArrowLeft 
 } from "lucide-react";
 import { CallUpEntry, UserProfile, translations } from "../types";
 import { getEntries, deleteEntry, getAllUsers } from "../lib/db";
+import { AdsterraBanner320x50 } from "./AdsterraAd";
 
 interface RecordsGridProps {
   user: UserProfile;
   language: 'en' | 'si';
   mode: 'pending' | 'completed' | 'all';
+  filterPreset?: 'all' | 'pending' | 'completed' | 'overdue' | 'dueToday' | 'dueThisWeek';
   onSelectEntry: (entry: CallUpEntry) => void;
   onEditEntry?: (entry: CallUpEntry) => void;
   refreshTrigger?: number;
+  onBackToHome?: () => void;
 }
 
 export default function RecordsGrid({
   user,
   language,
   mode,
+  filterPreset = 'all',
   onSelectEntry,
   onEditEntry,
-  refreshTrigger = 0
+  refreshTrigger = 0,
+  onBackToHome
 }: RecordsGridProps) {
   const t = translations[language];
   const [entries, setEntries] = useState<CallUpEntry[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Local preset filter state
+  const [activePreset, setActivePreset] = useState<'all' | 'pending' | 'completed' | 'overdue' | 'dueToday' | 'dueThisWeek'>('all');
+
+  useEffect(() => {
+    if (filterPreset) {
+      setActivePreset(filterPreset);
+    }
+  }, [filterPreset, mode]);
   
   // Search & Filters state
   const [searchQuery, setSearchQuery] = useState("");
@@ -98,6 +112,23 @@ export default function RecordsGrid({
     displayList = displayList.filter(e => e.status === 'Completed');
   }
 
+  // 1.5 Active Preset filtering
+  if (activePreset === 'pending') {
+    displayList = displayList.filter(e => e.status === 'Pending' || e.status === 'In Progress');
+  } else if (activePreset === 'completed') {
+    displayList = displayList.filter(e => e.status === 'Completed');
+  } else if (activePreset === 'overdue') {
+    displayList = displayList.filter(e => e.status === 'Overdue');
+  } else if (activePreset === 'dueToday') {
+    displayList = displayList.filter(e => e.status !== 'Completed' && e.dueDate === todayStr);
+  } else if (activePreset === 'dueThisWeek') {
+    const today = new Date();
+    const oneWeekLater = new Date();
+    oneWeekLater.setDate(today.getDate() + 7);
+    const oneWeekLaterStr = oneWeekLater.toISOString().split('T')[0];
+    displayList = displayList.filter(e => e.status !== 'Completed' && e.dueDate >= todayStr && e.dueDate <= oneWeekLaterStr);
+  }
+
   // 2. Query Search Filter (Search by Ref Number, Subject, Officer Name, Office, Submission Location)
   if (searchQuery.trim() !== '') {
     const q = searchQuery.toLowerCase();
@@ -147,9 +178,32 @@ export default function RecordsGrid({
     document.body.removeChild(link);
   };
 
+  const presetLabels: Record<string, { en: string; si: string }> = {
+    all: { en: "All Records", si: "සියලුම ලේඛන" },
+    pending: { en: "Pending Items Only", si: "පොරොත්තු ලේඛන පමණි" },
+    completed: { en: "Completed Items Only", si: "අවසන් කරන ලද ලේඛන පමණි" },
+    overdue: { en: "Overdue Items Only", si: "කල් ඉකුත් වූ ලේඛන පමණි" },
+    dueToday: { en: "Due Today Only", si: "අද දිනට නියමිත ලේඛන පමණි" },
+    dueThisWeek: { en: "Due This Week Only", si: "මේ සතියේ නියමිත ලේඛන පමණි" }
+  };
+
   return (
     <div className="space-y-6">
       
+      {/* Super Admin Back to Dashboard Button */}
+      {user.role === 'Super Admin' && onBackToHome && (
+        <div className="flex justify-start">
+          <button
+            onClick={onBackToHome}
+            className="flex items-center space-x-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 px-4.5 py-2 font-sans text-xs font-bold dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-300 transition-all border border-slate-200/50 dark:border-slate-800/50 cursor-pointer shadow-xs"
+            id="super-admin-back-to-home-btn"
+          >
+            <ArrowLeft className="h-4 w-4 text-indigo-900 dark:text-amber-500" />
+            <span>{language === 'si' ? 'නැවත මුල් පිටුවට' : 'Back to Dashboard'}</span>
+          </button>
+        </div>
+      )}
+
       {/* Title Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
         <div className="text-left">
@@ -175,6 +229,29 @@ export default function RecordsGrid({
           <span>{t.exportExcel}</span>
         </button>
       </div>
+
+      {/* Active Dashboard Preset Banner */}
+      {activePreset !== 'all' && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50/70 p-4 dark:border-indigo-900/60 dark:bg-indigo-950/20 text-left">
+          <div className="flex items-center space-x-2.5">
+            <Filter className="h-5 w-5 text-indigo-700 dark:text-indigo-400 shrink-0" />
+            <div>
+              <span className="font-sans text-[10px] font-extrabold uppercase tracking-widest text-indigo-500 dark:text-indigo-400">
+                {language === 'si' ? 'සක්‍රීය පෙරහන' : 'Active Dashboard Preset'}
+              </span>
+              <p className="font-sans text-sm font-bold text-indigo-900 dark:text-indigo-200">
+                {language === 'si' ? presetLabels[activePreset].si : presetLabels[activePreset].en} ({displayList.length} {language === 'si' ? 'ලේඛන හමු විය' : 'records found'})
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActivePreset('all')}
+            className="self-start sm:self-center rounded-lg bg-indigo-200/80 hover:bg-indigo-200 px-3.5 py-1.5 font-sans text-xs font-extrabold text-indigo-900 dark:bg-indigo-900 dark:text-indigo-100 dark:hover:bg-indigo-850 transition-all cursor-pointer shadow-xs border border-indigo-300/20"
+          >
+            {language === 'si' ? 'සියල්ල පෙන්වන්න' : 'Show All Records'}
+          </button>
+        </div>
+      )}
 
       {/* Advanced Filter Matrix */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4 rounded-xl border border-slate-200 bg-white p-4.5 dark:border-slate-800 dark:bg-slate-900">
@@ -434,6 +511,11 @@ export default function RecordsGrid({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Registry View Adsterra Banner */}
+      <div className="mt-6">
+        <AdsterraBanner320x50 language={language} />
       </div>
 
     </div>

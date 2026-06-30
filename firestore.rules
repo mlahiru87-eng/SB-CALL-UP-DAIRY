@@ -52,9 +52,10 @@ service cloud.firestore {
 
     // --- NOTIFICATIONS COLLECTION ---
     match /notifications/{notifId} {
-      // Authenticated users can read notifications targeted to them or general ones (no targetUserId)
+      // Authenticated users can read notifications targeted to them or general ones (no targetUserId or empty targetUserId)
       allow read: if isAuthenticated() && (
         !resource.data.keys().contains('targetUserId') || 
+        resource.data.targetUserId == "" ||
         resource.data.targetUserId == request.auth.uid || 
         isAdminOrSuper()
       );

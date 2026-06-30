@@ -9,11 +9,13 @@ import {
 } from "lucide-react";
 import { CallUpEntry, UserProfile, translations } from "../types";
 import { getEntries, getAllUsers } from "../lib/db";
+import { AdsterraBanner320x50, AdsterraBanner300x250, AdsterraContainerAd } from "./AdsterraAd";
 
 interface DashboardProps {
   user: UserProfile;
   language: 'en' | 'si';
   setActiveTab: (tab: string) => void;
+  setFilterPreset?: (preset: 'all' | 'pending' | 'completed' | 'overdue' | 'dueToday' | 'dueThisWeek') => void;
   onSelectEntry: (entry: CallUpEntry) => void;
   onNewEntryClick?: () => void;
 }
@@ -22,6 +24,7 @@ export default function Dashboard({
   user,
   language,
   setActiveTab,
+  setFilterPreset,
   onSelectEntry,
   onNewEntryClick
 }: DashboardProps) {
@@ -225,11 +228,27 @@ export default function Dashboard({
             <button
               key={card.id}
               onClick={() => {
-                if (card.id === "pending") setActiveTab("pending");
-                else if (card.id === "completed") setActiveTab("completed");
-                else if (card.id === "records" || card.id === "dueToday" || card.id === "dueThisWeek") setActiveTab("records");
-                else if (card.id === "overdue") setActiveTab("pending");
-                else if (card.id === "users") setActiveTab("users");
+                if (card.id === "pending") {
+                  if (setFilterPreset) setFilterPreset("pending");
+                  setActiveTab("pending");
+                } else if (card.id === "completed") {
+                  if (setFilterPreset) setFilterPreset("completed");
+                  setActiveTab("completed");
+                } else if (card.id === "records") {
+                  if (setFilterPreset) setFilterPreset("all");
+                  setActiveTab("records");
+                } else if (card.id === "overdue") {
+                  if (setFilterPreset) setFilterPreset("overdue");
+                  setActiveTab("pending");
+                } else if (card.id === "dueToday") {
+                  if (setFilterPreset) setFilterPreset("dueToday");
+                  setActiveTab("records");
+                } else if (card.id === "dueThisWeek") {
+                  if (setFilterPreset) setFilterPreset("dueThisWeek");
+                  setActiveTab("records");
+                } else if (card.id === "users") {
+                  setActiveTab("users");
+                }
               }}
               className={`flex flex-col items-center justify-center text-center rounded-2xl border p-5 transition-all hover:scale-[1.02] hover:shadow-md cursor-pointer ${style.bg} ${style.border} shadow-xs min-h-[140px]`}
               id={`stat-card-${card.id}`}
@@ -250,6 +269,9 @@ export default function Dashboard({
           );
         })}
       </div>
+
+      {/* Top Advertisement Banner */}
+      <AdsterraBanner320x50 language={language} />
 
       {/* Charts & Analytics Section */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -484,6 +506,16 @@ export default function Dashboard({
             </table>
           )}
         </div>
+      </div>
+
+      {/* Bottom Large Container Advertisement */}
+      <div className="mt-6">
+        <AdsterraContainerAd language={language} />
+      </div>
+
+      {/* Sidebar-style 300x250 Banner at the very bottom for added monetization */}
+      <div className="mt-6 flex justify-center">
+        <AdsterraBanner300x250 language={language} />
       </div>
 
     </div>

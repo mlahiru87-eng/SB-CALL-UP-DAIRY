@@ -12,6 +12,56 @@ import {
   SystemSettings, UserRole, PriorityLevel, EntryStatus, Attachment 
 } from "../types";
 
+// ==========================================
+// FIRESTORE ERROR HANDLING (MANDATORY)
+// ==========================================
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid || null,
+      email: auth?.currentUser?.email || null,
+      emailVerified: auth?.currentUser?.emailVerified || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || null,
+      tenantId: auth?.currentUser?.tenantId || null,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 // Key for Demo/LocalStorage mode
 const DEMO_MODE_KEY = "sb_call_up_diary_demo_mode";
 const LOCAL_STORAGE_DB_PREFIX = "sb_diary_";
@@ -683,7 +733,7 @@ export const getAllUsers = async (): Promise<UserProfile[]> => {
       return usersList;
     } catch (err) {
       console.error("Firestore error loading users, falling back to local list:", err);
-      return getLocalUsers();
+      handleFirestoreError(err, OperationType.LIST, "users");
     }
   }
 };
@@ -703,11 +753,36 @@ export const getEntries = async (): Promise<CallUpEntry[]> => {
     entriesList = data ? JSON.parse(data) : [];
   } else {
     try {
-      const q = query(collection(db!, "callup_entries"));
-      const querySnapshot = await getDocs(q);
-      querySnapshot.forEach((doc) => {
-        entriesList.push({ id: doc.id, ...doc.data() } as CallUpEntry);
-      });
+      if (activeUser && (activeUser.role === 'Admin' || activeUser.role === 'Super Admin')) {
+        const q = query(collection(db!, "callup_entries"));
+        const querySnapshot = await getDocs(q);
+        querySnapshot.forEach((doc) => {
+          entriesList.push({ id: doc.id, ...doc.data() } as CallUpEntry);
+        });
+      } else if (activeUser) {
+        // Query only entries that are assigned to this user or created by this user
+        const q1 = query(collection(db!, "callup_entries"), where("responsibleOfficer", "==", activeUser.uid));
+        const q2 = query(collection(db!, "callup_entries"), where("createdBy", "==", activeUser.uid));
+        
+        const [snap1, snap2] = await Promise.all([
+          getDocs(q1).catch(err => handleFirestoreError(err, OperationType.LIST, "callup_entries")),
+          getDocs(q2).catch(err => handleFirestoreError(err, OperationType.LIST, "callup_entries"))
+        ]);
+        
+        const seenIds = new Set<string>();
+        snap1.forEach((doc) => {
+          if (!seenIds.has(doc.id)) {
+            seenIds.add(doc.id);
+            entriesList.push({ id: doc.id, ...doc.data() } as CallUpEntry);
+          }
+        });
+        snap2.forEach((doc) => {
+          if (!seenIds.has(doc.id)) {
+            seenIds.add(doc.id);
+            entriesList.push({ id: doc.id, ...doc.data() } as CallUpEntry);
+          }
+        });
+      }
     } catch (err) {
       console.error("Firestore error loading entries, falling back to local:", err);
       const data = localStorage.getItem(LOCAL_STORAGE_DB_PREFIX + "entries");
@@ -963,11 +1038,39 @@ export const getNotifications = async (): Promise<SystemNotification[]> => {
     notifList = data ? JSON.parse(data) : [];
   } else {
     try {
-      const q = query(collection(db!, "notifications"), orderBy("createdAt", "desc"));
-      const querySnapshot = await getDocs(q);
-      querySnapshot.forEach((doc) => {
-        notifList.push({ id: doc.id, ...doc.data() } as SystemNotification);
-      });
+      if (activeUser && (activeUser.role === 'Admin' || activeUser.role === 'Super Admin')) {
+        const q = query(collection(db!, "notifications"), orderBy("createdAt", "desc"));
+        const querySnapshot = await getDocs(q);
+        querySnapshot.forEach((doc) => {
+          notifList.push({ id: doc.id, ...doc.data() } as SystemNotification);
+        });
+      } else if (activeUser) {
+        // Query targeted notifications or general ones
+        const q1 = query(collection(db!, "notifications"), where("targetUserId", "==", activeUser.uid));
+        const q2 = query(collection(db!, "notifications"), where("targetUserId", "==", ""));
+        
+        const [snap1, snap2] = await Promise.all([
+          getDocs(q1).catch(err => handleFirestoreError(err, OperationType.LIST, "notifications")),
+          getDocs(q2).catch(err => handleFirestoreError(err, OperationType.LIST, "notifications"))
+        ]);
+        
+        const seenIds = new Set<string>();
+        snap1.forEach((doc) => {
+          if (!seenIds.has(doc.id)) {
+            seenIds.add(doc.id);
+            notifList.push({ id: doc.id, ...doc.data() } as SystemNotification);
+          }
+        });
+        snap2.forEach((doc) => {
+          if (!seenIds.has(doc.id)) {
+            seenIds.add(doc.id);
+            notifList.push({ id: doc.id, ...doc.data() } as SystemNotification);
+          }
+        });
+        
+        // Sort manually by createdAt desc since we combined queries
+        notifList.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }
     } catch (err) {
       console.error("Firestore error loading notifications, falling back to local:", err);
       const data = localStorage.getItem(LOCAL_STORAGE_DB_PREFIX + "notifications");
@@ -987,6 +1090,7 @@ export const createNotification = async (notif: Omit<SystemNotification, 'id' | 
   const isDemo = getIsDemoMode();
   const newNotif: SystemNotification = {
     ...notif,
+    targetUserId: notif.targetUserId || "",
     id: isDemo ? "notif-" + Date.now() + Math.random().toString(36).substr(2, 4) : "",
     readBy: [],
     createdAt: new Date().toISOString()
@@ -1005,8 +1109,7 @@ export const createNotification = async (notif: Omit<SystemNotification, 'id' | 
       await setDoc(docRef, cleanUndefined(finalized));
       return finalized;
     } catch (err) {
-      console.error("Failed to write notification to firestore", err);
-      return newNotif;
+      handleFirestoreError(err, OperationType.WRITE, "notifications");
     }
   }
 };

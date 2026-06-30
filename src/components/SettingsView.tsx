@@ -1,263 +1,367 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { 
-  Settings, Save, Check, ShieldAlert, Building, 
-  Bell, HelpCircle, Loader2, RefreshCw 
+  Settings, Check, ShieldAlert, Loader2, Key, Eye, EyeOff, Lock 
 } from "lucide-react";
-import { SystemSettings, translations, UserProfile } from "../types";
-import { getSystemSettings, saveSystemSettings, getIsDemoMode, setIsDemoMode } from "../lib/db";
+import { translations, UserProfile } from "../types";
+import { getIsDemoMode } from "../lib/db";
+import { auth, isFirebaseEnabled } from "../lib/firebase";
+import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
 
 interface SettingsViewProps {
   user: UserProfile;
   language: 'en' | 'si';
 }
 
+const settingsTranslations = {
+  en: {
+    title: "Settings",
+    subtitle: "Manage your system credentials and security parameters",
+    changePassword: "Change Password",
+    currentPassword: "Current Password",
+    newPassword: "New Password",
+    confirmNewPassword: "Confirm New Password",
+    changePasswordBtn: "Change Password",
+    requiredField: "This field is required",
+    passwordTooShort: "New Password must contain at least 8 characters",
+    passwordsDoNotMatch: "Confirm Password must match New Password",
+    successMsg: "Password successfully changed!",
+    incorrectCurrentPassword: "The current password you entered is incorrect.",
+    noUser: "No authenticated user found. Please re-authenticate.",
+    demoNotice: "Running in Demo Mode. Your password change has been simulated locally.",
+    processing: "Updating password...",
+    placeholderCurrent: "Enter current password",
+    placeholderNew: "Enter at least 8 characters",
+    placeholderConfirm: "Repeat your new password"
+  },
+  si: {
+    title: "සැකසුම්",
+    subtitle: "ඔබගේ පද්ධති අක්තපත්‍ර සහ ආරක්ෂිත මුරපද සැකසුම් කළමනාකරණය කරන්න",
+    changePassword: "මුරපදය වෙනස් කරන්න",
+    currentPassword: "පවතින මුරපදය",
+    newPassword: "නව මුරපදය",
+    confirmNewPassword: "නව මුරපදය තහවුරු කරන්න",
+    changePasswordBtn: "මුරපදය වෙනස් කරන්න",
+    requiredField: "මෙම තීරුව පිරවීම අනිවාර්ය වේ",
+    passwordTooShort: "නව මුරපදයට අවම වශයෙන් අක්ෂර 8 ක් ඇතුළත් විය යුතුය",
+    passwordsDoNotMatch: "තහවුරු කළ මුරපදය නව මුරපදයට සමාන විය යුතුය",
+    successMsg: "මුරපදය සාර්ථකව වෙනස් කරන ලදී!",
+    incorrectCurrentPassword: "ඇතුළත් කළ පවතින මුරපදය වැරදි සහගතය.",
+    noUser: "වලංගු පරිශීලකයෙකු හමු නොවීය. කරුණාකර නැවත ඇතුල් වන්න.",
+    demoNotice: "පෙරහුරු මාදිලිය (Demo Mode) ක්‍රියාත්මකයි. මුරපදය වෙනස් කිරීම සාර්ථකව අනුකරණය කරන ලදී.",
+    processing: "මුරපදය වෙනස් කරමින් පවතී...",
+    placeholderCurrent: "පවතින මුරපදය ඇතුළත් කරන්න",
+    placeholderNew: "අවම වශයෙන් අක්ෂර 8 ක් ඇතුළත් කරන්න",
+    placeholderConfirm: "නව මුරපදය නැවත ඇතුළත් කරන්න"
+  }
+};
+
 export default function SettingsView({
   user,
   language
 }: SettingsViewProps) {
   const t = translations[language];
-  const [settings, setSettings] = useState<SystemSettings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [success, setSuccess] = useState("");
+  const st = settingsTranslations[language];
+
+  // Form Fields State
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  // Visibility Toggles State
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Status & Validation State
+  const [errors, setErrors] = useState<{
+    currentPassword?: string;
+    newPassword?: string;
+    confirmPassword?: string;
+  }>({});
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const [orgName, setOrgName] = useState("");
-  const [orgLogo, setOrgLogo] = useState("");
-  const [emailNotif, setEmailNotif] = useState(true);
-  const [warningDays, setWarningDays] = useState(3);
-  
-  // Sandbox environment details
-  const [isDemo, setIsDemo] = useState(getIsDemoMode());
-
-  const canEdit = user.role === 'Super Admin' || user.role === 'Admin';
-
-  useEffect(() => {
-    async function loadSettings() {
-      try {
-        const s = await getSystemSettings();
-        setSettings(s);
-        setOrgName(s.organizationName);
-        setOrgLogo(s.organizationLogo);
-        setEmailNotif(s.emailNotifications);
-        setWarningDays(s.reminderDaysBefore);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadSettings();
-  }, []);
-
-  const handleSave = async (e: React.FormEvent) => {
+  const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canEdit) return;
-
+    
+    // Reset status
+    setErrors({});
     setError("");
     setSuccess("");
-    setSaving(true);
-
-    if (!orgName.trim()) {
-      setSaving(false);
-      return setError("Organization Name is required.");
+    
+    // Validation
+    let hasErrors = false;
+    const newErrors: typeof errors = {};
+    
+    if (!currentPassword) {
+      newErrors.currentPassword = st.requiredField;
+      hasErrors = true;
     }
-
-    try {
-      const updated: SystemSettings = {
-        organizationName: orgName.trim(),
-        organizationLogo: orgLogo.trim(),
-        emailNotifications: emailNotif,
-        reminderDaysBefore: warningDays
-      };
-      await saveSystemSettings(updated);
-      setSuccess(t.saveSettingsSuccess);
-    } catch (err: any) {
-      setError(err.message || "Failed to update configuration.");
-    } finally {
-      setSaving(false);
+    
+    if (!newPassword) {
+      newErrors.newPassword = st.requiredField;
+      hasErrors = true;
+    } else if (newPassword.length < 8) {
+      newErrors.newPassword = st.passwordTooShort;
+      hasErrors = true;
+    }
+    
+    if (!confirmPassword) {
+      newErrors.confirmPassword = st.requiredField;
+      hasErrors = true;
+    } else if (confirmPassword !== newPassword) {
+      newErrors.confirmPassword = st.passwordsDoNotMatch;
+      hasErrors = true;
+    }
+    
+    if (hasErrors) {
+      setErrors(newErrors);
+      return;
+    }
+    
+    setLoading(true);
+    
+    const isDemo = getIsDemoMode();
+    if (!isFirebaseEnabled || isDemo) {
+      // Demo mode simulation
+      setTimeout(() => {
+        setLoading(false);
+        setSuccess(`${st.successMsg} (${st.demoNotice})`);
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
+      }, 1200);
+    } else {
+      // Live Firebase mode
+      try {
+        const currentUser = auth?.currentUser;
+        if (!currentUser) {
+          throw new Error(st.noUser);
+        }
+        
+        // Re-authenticate
+        const credential = EmailAuthProvider.credential(currentUser.email || "", currentPassword);
+        await reauthenticateWithCredential(currentUser, credential);
+        
+        // Update password
+        await updatePassword(currentUser, newPassword);
+        
+        setLoading(false);
+        setSuccess(st.successMsg);
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
+      } catch (err: any) {
+        setLoading(false);
+        console.error("Firebase Password change error:", err);
+        
+        // Check for incorrect credential / wrong password
+        if (
+          err.code === "auth/invalid-credential" || 
+          err.code === "auth/wrong-password" || 
+          err.message?.includes("wrong-password") || 
+          err.message?.includes("invalid-credential")
+        ) {
+          setErrors({
+            currentPassword: st.incorrectCurrentPassword
+          });
+          setError(st.incorrectCurrentPassword);
+        } else {
+          setError(err.message || "An unexpected error occurred. Please try again.");
+        }
+      }
     }
   };
-
-  const handleDemoToggle = (checked: boolean) => {
-    setIsDemoMode(checked);
-    setIsDemo(checked);
-    setSuccess("Database mode swapped! Page reload recommended to flush state cache.");
-    setTimeout(() => {
-      window.location.reload();
-    }, 1500);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-900 border-t-amber-500"></div>
-      </div>
-    );
-  }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      
-      {/* Page Title */}
-      <div className="text-left border-b border-slate-100 pb-3 dark:border-slate-800">
-        <h1 className="font-sans text-xl font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center space-x-2">
+    <div className="max-w-xl mx-auto w-full px-1">
+      {/* Page Title & Subtitle */}
+      <div className="text-left border-b border-slate-100 pb-3 dark:border-slate-800 mb-6">
+        <h1 className="font-sans text-lg font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center space-x-2">
           <Settings className="h-5 w-5 text-indigo-900 dark:text-amber-500" />
-          <span>{t.settings}</span>
+          <span>{st.title}</span>
         </h1>
         <p className="font-sans text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-          Configure security threshold metrics, warning schedules, and system database parameters
+          {st.subtitle}
         </p>
       </div>
 
-      {/* Messages */}
+      {/* Global Success / Error Message Banners */}
       {success && (
-        <div className="flex items-center space-x-2 rounded-lg bg-emerald-50 p-3 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400 border border-emerald-200">
-          <Check className="h-4 w-4 shrink-0" />
-          <span>{success}</span>
+        <div className="flex items-start space-x-2 rounded-xl bg-emerald-50/85 p-3.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-400 border border-emerald-200/50 mb-5 animate-fade-in text-left">
+          <Check className="h-4.5 w-4.5 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
+          <div className="leading-relaxed">{success}</div>
         </div>
       )}
 
       {error && (
-        <div className="flex items-center space-x-2 rounded-lg bg-red-50 p-3 text-xs font-semibold text-red-700 dark:bg-red-950/20 dark:text-red-400 border border-red-200">
-          <ShieldAlert className="h-4 w-4 shrink-0" />
-          <span>{error}</span>
+        <div className="flex items-start space-x-2 rounded-xl bg-red-50/85 p-3.5 text-xs font-semibold text-red-800 dark:bg-red-950/20 dark:text-red-400 border border-red-200/50 mb-5 animate-fade-in text-left">
+          <ShieldAlert className="h-4.5 w-4.5 shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
+          <div className="leading-relaxed">{error}</div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        
-        {/* Left main form cards */}
-        <div className="md:col-span-2 space-y-6">
-          <form onSubmit={handleSave} className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900 space-y-4 shadow-xs text-left">
-            <h3 className="font-sans text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center space-x-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-              <Building className="h-4.5 w-4.5 text-indigo-900 dark:text-amber-500" />
-              <span>Office Identification</span>
-            </h3>
+      {/* Main Form Card */}
+      <form 
+        onSubmit={handlePasswordChange} 
+        className="rounded-2xl border border-slate-200/80 bg-white p-5 sm:p-6 dark:border-slate-800/80 dark:bg-slate-900 space-y-5 shadow-xs text-left"
+      >
+        <h3 className="font-sans text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center space-x-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+          <Lock className="h-4 w-4 text-indigo-900 dark:text-amber-500" />
+          <span>{st.changePassword}</span>
+        </h3>
 
-            {/* Org Name */}
-            <div className="flex flex-col">
-              <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                {t.organizationName} *
-              </label>
-              <input
-                type="text"
-                value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                disabled={!canEdit}
-                placeholder="e.g. Special Branch Head Office - Sri Lanka Police"
-                className="rounded-lg border border-slate-200 p-2.5 font-sans text-xs font-semibold text-slate-800 focus:outline-hidden disabled:opacity-60 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
-                required
-              />
-            </div>
-
-            {/* Org Logo URL */}
-            <div className="flex flex-col">
-              <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                {t.organizationLogo} (Asset link / Base64)
-              </label>
-              <input
-                type="text"
-                value={orgLogo}
-                onChange={(e) => setOrgLogo(e.target.value)}
-                disabled={!canEdit}
-                placeholder="https://example.com/logo.png"
-                className="rounded-lg border border-slate-200 p-2.5 font-sans text-xs font-semibold text-slate-800 focus:outline-hidden disabled:opacity-60 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
-              />
-            </div>
-
-            <h3 className="font-sans text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center space-x-2 pt-4 pb-2 border-b border-slate-100 dark:border-slate-800">
-              <Bell className="h-4.5 w-4.5 text-indigo-900 dark:text-amber-500" />
-              <span>Warning & Reminder Thresholds</span>
-            </h3>
-
-            {/* Email warning check */}
-            <div className="flex items-center justify-between py-1">
-              <div className="text-left">
-                <p className="font-sans text-xs font-bold text-slate-800 dark:text-slate-200">{t.emailNotificationsToggle}</p>
-                <p className="font-sans text-[10px] text-slate-400">Dispatch system updates of approaching deadlines to officers</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={emailNotif}
-                onChange={(e) => setEmailNotif(e.target.checked)}
-                disabled={!canEdit}
-                className="h-4 w-4 text-indigo-900 border-slate-300 rounded-md focus:ring-indigo-900"
-              />
-            </div>
-
-            {/* Threshold count days */}
-            <div className="flex flex-col">
-              <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 flex items-center space-x-1">
-                <span>{t.reminderDaysConfig}</span>
-                <HelpCircle className="h-3 w-3 text-slate-400" title="Flag entries as Orange Warning inside pending queue" />
-              </label>
-              <input
-                type="number"
-                value={warningDays}
-                onChange={(e) => setWarningDays(parseInt(e.target.value, 10))}
-                disabled={!canEdit}
-                min={1}
-                max={14}
-                className="w-32 rounded-lg border border-slate-200 p-2 font-sans text-xs font-semibold text-slate-800 focus:outline-hidden disabled:opacity-60 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
-                required
-              />
-            </div>
-
-            {/* Save Buttons */}
-            {canEdit && (
-              <div className="flex justify-end pt-4 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="flex items-center space-x-1.5 rounded-lg bg-indigo-900 hover:bg-indigo-950 px-5 py-2 font-sans text-xs font-bold text-white shadow-xs dark:bg-indigo-950 dark:hover:bg-slate-900 disabled:opacity-50 transition-all cursor-pointer"
-                  id="settings-save-btn"
-                >
-                  {saving ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-white" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  <span>{t.save}</span>
-                </button>
-              </div>
-            )}
-          </form>
-        </div>
-
-        {/* Right Sandbox/Firebase status Panel */}
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900 shadow-xs text-left">
-            <h3 className="font-sans text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider pb-2 border-b border-slate-100 dark:border-slate-800 flex items-center space-x-2">
-              <RefreshCw className="h-4.5 w-4.5 text-indigo-900" />
-              <span>Data Engine Toggle</span>
-            </h3>
-            
-            <p className="font-sans text-xs font-bold text-slate-800 dark:text-slate-200 mt-3">
-              {t.demoMode}
-            </p>
-            <p className="font-sans text-[10px] leading-relaxed text-slate-400 mt-1">
-              {t.demoModeDesc}
-            </p>
-
-            <div className="flex items-center justify-between mt-4 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800/50">
-              <span className="font-sans text-[10px] font-bold text-slate-500 uppercase">Demo State Active</span>
-              <input
-                type="checkbox"
-                checked={isDemo}
-                onChange={(e) => handleDemoToggle(e.target.checked)}
-                className="h-4 w-4 text-indigo-900 border-slate-300 rounded-md focus:ring-indigo-900 cursor-pointer"
-              />
-            </div>
-            
-            <span className="font-mono text-[9px] text-slate-400 dark:text-slate-500 mt-2 block text-center">
-              * Toggling triggers instant secure directory swap
+        {/* Current Password Field */}
+        <div className="flex flex-col space-y-1">
+          <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center space-x-1">
+            <span>{st.currentPassword}</span>
+            <span className="text-red-500">*</span>
+          </label>
+          <div className="relative">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+              <Key className="h-4 w-4" />
             </span>
+            <input
+              type={showCurrentPassword ? "text" : "password"}
+              value={currentPassword}
+              onChange={(e) => {
+                setCurrentPassword(e.target.value);
+                if (errors.currentPassword) {
+                  setErrors(prev => ({ ...prev, currentPassword: undefined }));
+                }
+              }}
+              placeholder={st.placeholderCurrent}
+              className={`w-full rounded-xl border pl-9 pr-10 py-2.5 font-sans text-sm font-medium text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 bg-slate-50/50 dark:bg-slate-950 focus:outline-hidden transition-colors ${
+                errors.currentPassword 
+                  ? "border-red-400 dark:border-red-500/70 focus:border-red-500" 
+                  : "border-slate-200 focus:border-indigo-900 dark:border-slate-800 dark:focus:border-amber-500"
+              }`}
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-hidden"
+              title={showCurrentPassword ? "Hide password" : "Show password"}
+            >
+              {showCurrentPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
           </div>
+          {errors.currentPassword && (
+            <p className="font-sans text-[11px] font-medium text-red-500 mt-1 pl-1">
+              {errors.currentPassword}
+            </p>
+          )}
         </div>
 
-      </div>
+        {/* New Password Field */}
+        <div className="flex flex-col space-y-1">
+          <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center space-x-1">
+            <span>{st.newPassword}</span>
+            <span className="text-red-500">*</span>
+          </label>
+          <div className="relative">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+              <Lock className="h-4 w-4" />
+            </span>
+            <input
+              type={showNewPassword ? "text" : "password"}
+              value={newPassword}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                if (errors.newPassword) {
+                  setErrors(prev => ({ ...prev, newPassword: undefined }));
+                }
+              }}
+              placeholder={st.placeholderNew}
+              className={`w-full rounded-xl border pl-9 pr-10 py-2.5 font-sans text-sm font-medium text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 bg-slate-50/50 dark:bg-slate-950 focus:outline-hidden transition-colors ${
+                errors.newPassword 
+                  ? "border-red-400 dark:border-red-500/70 focus:border-red-500" 
+                  : "border-slate-200 focus:border-indigo-900 dark:border-slate-800 dark:focus:border-amber-500"
+              }`}
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowNewPassword(!showNewPassword)}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-hidden"
+              title={showNewPassword ? "Hide password" : "Show password"}
+            >
+              {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          {errors.newPassword && (
+            <p className="font-sans text-[11px] font-medium text-red-500 mt-1 pl-1">
+              {errors.newPassword}
+            </p>
+          )}
+        </div>
 
+        {/* Confirm New Password Field */}
+        <div className="flex flex-col space-y-1">
+          <label className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center space-x-1">
+            <span>{st.confirmNewPassword}</span>
+            <span className="text-red-500">*</span>
+          </label>
+          <div className="relative">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+              <Lock className="h-4 w-4" />
+            </span>
+            <input
+              type={showConfirmPassword ? "text" : "password"}
+              value={confirmPassword}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                if (errors.confirmPassword) {
+                  setErrors(prev => ({ ...prev, confirmPassword: undefined }));
+                }
+              }}
+              placeholder={st.placeholderConfirm}
+              className={`w-full rounded-xl border pl-9 pr-10 py-2.5 font-sans text-sm font-medium text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 bg-slate-50/50 dark:bg-slate-950 focus:outline-hidden transition-colors ${
+                errors.confirmPassword 
+                  ? "border-red-400 dark:border-red-500/70 focus:border-red-500" 
+                  : "border-slate-200 focus:border-indigo-900 dark:border-slate-800 dark:focus:border-amber-500"
+              }`}
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-hidden"
+              title={showConfirmPassword ? "Hide password" : "Show password"}
+            >
+              {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          {errors.confirmPassword && (
+            <p className="font-sans text-[11px] font-medium text-red-500 mt-1 pl-1">
+              {errors.confirmPassword}
+            </p>
+          )}
+        </div>
+
+        {/* Large Primary Change Password Button */}
+        <div className="pt-2">
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full flex items-center justify-center space-x-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 px-5 py-3 font-sans text-sm font-bold text-white shadow-md dark:bg-indigo-950 dark:hover:bg-slate-800 disabled:opacity-50 transition-all cursor-pointer h-12"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin text-white" />
+                <span>{st.processing}</span>
+              </>
+            ) : (
+              <>
+                <Key className="h-4 w-4" />
+                <span>{st.changePasswordBtn}</span>
+              </>
+            )}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

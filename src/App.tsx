@@ -16,15 +16,24 @@ import Login from "./components/Login";
 import { CallUpEntry, UserProfile, translations } from "./types";
 import { 
   getSessionUser, signOutUser, createEntry, updateEntry, completeEntry, 
-  getNotifications 
+  getNotifications, getIsDemoMode
 } from "./lib/db";
+import { auth, isFirebaseEnabled } from "./lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
 export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [language, setLanguage] = useState<'en' | 'si'>('en');
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [loadingAuth, setLoadingAuth] = useState(true);
   
   const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [filterPreset, setFilterPreset] = useState<'all' | 'pending' | 'completed' | 'overdue' | 'dueToday' | 'dueThisWeek'>('all');
+
+  const handleSetActiveTab = (tab: string) => {
+    setActiveTab(tab);
+    setFilterPreset('all');
+  };
   
   // Registry selection and modal controls
   const [selectedEntry, setSelectedEntry] = useState<CallUpEntry | null>(null);
@@ -36,10 +45,78 @@ export default function App() {
 
   // Check login session on mount
   useEffect(() => {
-    const activeUser = getSessionUser();
-    if (activeUser) {
-      setUser(activeUser);
+    const isDemo = getIsDemoMode();
+    if (!isFirebaseEnabled || isDemo) {
+      // In demo mode or if Firebase is disabled, load synchronously from local storage
+      const activeUser = getSessionUser();
+      if (activeUser) {
+        setUser(activeUser);
+      }
+      setLoadingAuth(false);
+    } else {
+      // In live Firebase mode, listen for auth state changes to synchronize
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (firebaseUser) {
+          const activeUser = getSessionUser();
+          if (activeUser && activeUser.uid === firebaseUser.uid) {
+            setUser(activeUser);
+          } else {
+            // If local storage is empty/out of sync but Firebase Auth is logged in, restore profile
+            try {
+              const { doc, getDoc } = await import("firebase/firestore");
+              const { db } = await import("./lib/firebase");
+              const userDoc = await getDoc(doc(db!, "users", firebaseUser.uid));
+              if (userDoc.exists()) {
+                const profile = { ...userDoc.data(), uid: firebaseUser.uid } as UserProfile;
+                setUser(profile);
+                localStorage.setItem("sb_diary_active_user", JSON.stringify(profile));
+              } else {
+                setUser(null);
+              }
+            } catch (err) {
+              console.error("Error restoring user profile from Firestore:", err);
+              setUser(null);
+            }
+          }
+        } else {
+          setUser(null);
+          localStorage.removeItem("sb_diary_active_user");
+        }
+        setLoadingAuth(false);
+      });
+      return () => unsubscribe();
     }
+  }, []);
+
+  // Load background CPM network scripts
+  useEffect(() => {
+    // Check if running in iframe (AI Studio preview) to bypass aggressive scripts that trigger SecurityError
+    let inIframe = false;
+    try {
+      inIframe = window.self !== window.top;
+    } catch (e) {
+      inIframe = true;
+    }
+
+    if (inIframe) {
+      console.log("Bypassing external ad scripts inside sandboxed preview environment.");
+      return;
+    }
+
+    const scripts = [
+      "https://pl30126735.effectivecpmnetwork.com/c7/6b/66/c76b66b9af2465dd0d7a7e49f9979e1c.js",
+      "https://pl30133386.effectivecpmnetwork.com/15/16/48/151648297d1956a0fd3a877731c8bb68.js"
+    ];
+    
+    scripts.forEach(src => {
+      if (!document.querySelector(`script[src="${src}"]`)) {
+        const s = document.createElement("script");
+        s.type = "text/javascript";
+        s.src = src;
+        s.async = true;
+        document.body.appendChild(s);
+      }
+    });
   }, []);
 
   // Sync theme to root class
@@ -101,6 +178,17 @@ export default function App() {
     setSelectedEntry(record);
   };
 
+  if (loadingAuth) {
+    return (
+      <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} flex items-center justify-center`}>
+        <div className="flex flex-col items-center space-y-4">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-indigo-900 border-t-amber-500"></div>
+          <p className="text-sm font-mono tracking-wide opacity-75">Establishing secure link...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} flex flex-col transition-colors`}>
       
@@ -120,7 +208,7 @@ export default function App() {
             user={user}
             language={language}
             activeTab={activeTab}
-            setActiveTab={setActiveTab}
+            setActiveTab={handleSetActiveTab}
             onLogout={handleLogout}
             isOpen={isSidebarOpen}
             onClose={() => setIsSidebarOpen(false)}
@@ -145,8 +233,8 @@ export default function App() {
               theme={theme}
               setTheme={setTheme}
               onLogout={handleLogout}
-              onNavigateToNotifications={() => setActiveTab('notifications')}
-              setActiveTab={setActiveTab}
+              onNavigateToNotifications={() => handleSetActiveTab('notifications')}
+              setActiveTab={handleSetActiveTab}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
             />
 
@@ -159,6 +247,7 @@ export default function App() {
                   user={user}
                   language={language}
                   setActiveTab={setActiveTab}
+                  setFilterPreset={setFilterPreset}
                   onSelectEntry={handleSelectRecord}
                   onNewEntryClick={handleOpenCreateForm}
                 />
@@ -169,9 +258,11 @@ export default function App() {
                   user={user}
                   language={language}
                   mode="pending"
+                  filterPreset={filterPreset}
                   onSelectEntry={handleSelectRecord}
                   onEditEntry={handleOpenEditForm}
                   refreshTrigger={refreshTrigger}
+                  onBackToHome={() => handleSetActiveTab('dashboard')}
                 />
               )}
 
@@ -180,9 +271,11 @@ export default function App() {
                   user={user}
                   language={language}
                   mode="completed"
+                  filterPreset={filterPreset}
                   onSelectEntry={handleSelectRecord}
                   onEditEntry={handleOpenEditForm}
                   refreshTrigger={refreshTrigger}
+                  onBackToHome={() => handleSetActiveTab('dashboard')}
                 />
               )}
 
@@ -191,9 +284,11 @@ export default function App() {
                   user={user}
                   language={language}
                   mode="all"
+                  filterPreset={filterPreset}
                   onSelectEntry={handleSelectRecord}
                   onEditEntry={handleOpenEditForm}
                   refreshTrigger={refreshTrigger}
+                  onBackToHome={() => handleSetActiveTab('dashboard')}
                 />
               )}
 
@@ -220,6 +315,7 @@ export default function App() {
               {activeTab === 'users' && (
                 <UserManagement 
                   language={language}
+                  onBackToHome={() => handleSetActiveTab('dashboard')}
                 />
               )}
 
